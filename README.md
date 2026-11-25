@@ -160,6 +160,62 @@ When deploying to different environments (staging/production), update the config
 4. **`softsensor_permeate_output`** *(Permeate Gas ML Output)*: `time`, `measured_permeateflow`, `whb1_on`, `feed_total`, `p_total`, `y_hat`, `f_hat`, `deviation`, `rel_deviation`, `rel_dev_ewma`, `drift_alarm`, `trusted`, `suspect`.
 5. **`softsensor_permeate_daily`** *(Permeate Gas Daily Aggregation)*: `time`, `measured_total_lbs`, `softsensor_total_lbs`, `drift_alarm_frac`, `diff_pct`.
 
+### D. Parameters Reference (`fuel_gas` & `permeate_sensor`)
+
+#### 1. Fuel Gas Parameters (`fuel_gas/machine_learning/src/config.py` & `fuel_gas/interpolation/src/config.py`)
+| Parameter | Default | Description |
+|---|---|---|
+| `TARGET_TAG` | `46-FIC-103A1.A` | Physical fuel gas flow sensor tag [LBS/HR] |
+| `VALVE_OPENING_TAG` | `46-FIC-103A1.Q` | Fuel gas control valve `46-FV-103A` opening [%] |
+| `MIN_VALVE_OPENING` | `0.5` | Minimum valve opening (%) considered open (`valve_open = 1`) |
+| `MIN_FLUE_TEMP` | `300.0` | Minimum WHB #1 flue gas temperature (°F) for active flame (`whb1_on = 1`) |
+| `MAX_STACK_O2` | `17.5` | Maximum stack O2 (%) for active combustion (`whb1_on = 1`) |
+| `MIN_ACTIVE_FLOW` | `500.0` | Minimum predicted flow (LBS/HR) to evaluate relative drift & active MAPE |
+| `DRIFT_REL_THRESHOLD` | `0.15` | Relative deviation threshold (15%) to trigger `drift_alarm = 1` |
+| `EWMA_ALPHA` | `0.05` | EWMA smoothing factor for drift tracking (ignored when `--disable-ewma` or `--single-point` is used) |
+| `RANDOM_SEED` | `42` | Random seed for reproducible training & GroupKFold splitting |
+| `CV_TO_FLOW_FACTOR` | `48.4467` | Valve capacity ($C_v$) to flowrate (LBS/HR) conversion factor for interpolation |
+| `MIN_ACTIVE_OPENING` | `0.5` | Minimum valve opening (%) for interpolation drift statistics |
+
+#### 2. Permeate Sensor Parameters (`permeate_sensor/machine_learning/src/config.py`)
+| Parameter | Default | Description |
+|---|---|---|
+| `TARGET_TAG` | `46-FQI-106A.A` | Physical permeate gas flow sensor tag [LBS/HR] |
+| `MEMBRANE_FEED_TAGS` | 10 tags | Upstream raw feed (`15-FQI-002.A`, `15-FQI-402.A`) & train A–H inlet/residue tags (`20-FQI-*`, `24-FQI-*`) |
+| `WHB_TAGS` | 3 tags | `46-FQI-206A.A` (to WHB #2), `46-TIC-101.A` (flue gas temp), `46-AI-101.A` (flue gas O2) |
+| `VALVE_PRESSURE_TAGS` | 2 tags | `46-FIC-106A.Q` (permeate valve opening [%]), `20-PIC-106.A` (header pressure [PSIG]) |
+| `MIN_ACTIVE_FLOW` | `500.0` | Minimum predicted flow (LBS/HR) to evaluate relative drift |
+| `DRIFT_REL_THRESHOLD` | `0.15` | Relative deviation threshold (15%) to trigger `drift_alarm = 1` |
+| `EWMA_ALPHA` | `0.05` | EWMA smoothing factor (~30–60 min response window; ignored with `--disable-ewma` / `--single-point`) |
+
+#### 3. Output Column Definitions (TimescaleDB)
+| Column | Table(s) | Description |
+|---|---|---|
+| `time` | All tables | UTC timestamp (`TIMESTAMPTZ`, primary key & hypertable time index) |
+| `measured_fuelgas` | `softsensor_fuelgas_output`, `predicted_fuel_gas_103a` | Physical fuel gas flowrate `46-FIC-103A1.A` [LBS/HR] |
+| `measured_permeateflow` | `softsensor_permeate_output` | Physical permeate gas flowrate `46-FQI-106A.A` [LBS/HR] |
+| `valve_opening_pct` | `softsensor_fuelgas_output` | Control valve opening `46-FIC-103A1.Q` [%] |
+| `whb1_on` | Both ML outputs | WHB #1 burner status (`1` if `46-TIC-101.A > 300.0` and `46-AI-101.A < 17.5` or NaN, else `0`) |
+| `valve_open` | `softsensor_fuelgas_output` | Valve status (`1` if `valve_opening_pct > 0.5`, else `0`) |
+| `fuel_gas_active` | `softsensor_fuelgas_output` | Combined active gating (`1` if `whb1_on == 1` and `valve_open == 1`, else `0`) |
+| `feed_total` | `softsensor_permeate_output` | Total raw plant feed gas (`15-FQI-002.A + 15-FQI-402.A`) |
+| `p_total` | `softsensor_permeate_output` | Estimated total upstream membrane permeate across trains A–H |
+| `y_hat` | Both ML outputs | Raw ML model prediction [LBS/HR] before physics gating |
+| `f_hat` | Both ML outputs | Final gated soft sensor prediction [LBS/HR] (`0.0` when inactive) |
+| `deviation` | Both ML outputs | Absolute difference (`measured - f_hat`) [LBS/HR] |
+| `rel_deviation` | Both ML outputs | Instantaneous relative deviation (`\|measured - f_hat\| / max(f_hat, MIN_ACTIVE_FLOW)` when active) |
+| `rel_dev_ewma` | Both ML outputs | EWMA-smoothed relative deviation (`NULL` when `--disable-ewma` / `--single-point` is active) |
+| `drift_alarm` | Both ML outputs | `1` when active drift metric $\ge$ `DRIFT_REL_THRESHOLD` (0.15), else `0` |
+| `trusted` / `suspect` | Both ML outputs | Complementary health flags (`trusted = 1 - drift_alarm`, `suspect = drift_alarm`) |
+| `measured_total_lbs` / `softsensor_total_lbs` | Both `*_daily` tables | Daily integrated mass total [LBS] for physical sensor vs soft sensor |
+| `active_minutes` | `softsensor_fuelgas_daily` | Total active fuel gas operating minutes per day |
+| `drift_alarm_frac` | Both `*_daily` tables | Daily fraction (`0.0`–`1.0`) of points with `drift_alarm == 1` |
+| `diff_pct` | Both `*_daily` tables | Daily percentage difference `((measured_total_lbs - softsensor_total_lbs) / softsensor_total_lbs) * 100` |
+| `tag_46_fic_103a_q_opening` | `predicted_fuel_gas_103a` | Normalized column for `46-FIC-103A.Q_opening` [%] |
+| `estimated_cv_linear` | `predicted_fuel_gas_103a` | Interpolated valve $C_v$ from `cv_fuelgas.csv` |
+| `predicted_flow_linear` | `predicted_fuel_gas_103a` | Linear interpolation flowrate (`48.4467 * estimated_cv_linear`) [LBS/HR] |
+| `sensor_drift_deviation` | `predicted_fuel_gas_103a` | Difference (`measured_fuelgas - predicted_flow_linear`) [LBS/HR] |
+
 ---
 
 ## 5. Running Pipelines, Inference, & Cron
@@ -197,18 +253,56 @@ python src/evaluate.py                              # Evaluation & figures to re
 python run_pipeline.py                              # Run train -> inference -> evaluate
 ```
 
-### C. `src/inference.py` CLI Options (Both `fuel_gas` & `permeate_sensor`)
-| Flag | Description |
-|---|---|
-| *(no flags)* | Full-historian batch inference on `historian_clean` + daily aggregation |
-| `--single-point` | Query **1 latest point** (`ORDER BY time DESC LIMIT 1`); implies `--disable-ewma` & `--skip-daily` |
-| `--latest` | Query last 180 minutes (`now() - 180m`), write last 5 minutes, skip daily |
-| `--disable-ewma` | Disable *EWMA smoothing*; `drift_alarm` uses instantaneous relative deviation |
-| `--lookback-minutes N` | Query `N` minutes back from InfluxDB |
-| `--write-minutes N` | Write only points within the last `N` minutes of the latest timestamp (`0` = latest point only) |
-| `--delay-minutes N` | Shift target end time back by `N` minutes from `now()` (e.g., `30` when cron at `05:30` targets `05:00`) |
-| `--end-time "YYYY-MM-DD HH:MM:SS"` | Explicit target end timestamp |
-| `--skip-daily` | Skip writing the daily aggregation measurement |
+### C. Complete CLI Command Flags (`fuel_gas` & `permeate_sensor`)
+
+#### 1. `src/inference.py` (Both `fuel_gas` & `permeate_sensor`)
+| Flag | Default | Description |
+|---|---|---|
+| *(no flags)* | — | Full-historian batch inference on `historian_clean` + daily aggregation to TimescaleDB |
+| `--single-point` | `False` | Query **1 latest point** (`ORDER BY time DESC LIMIT 1`); implies `--disable-ewma` & `--skip-daily` |
+| `--latest` | `False` | Incremental mode: query last 180 minutes (`now() - 180m`), write last 5 minutes, skip daily |
+| `--disable-ewma` | `False` | Disable *EWMA smoothing*; `rel_dev_ewma` is `NULL` and `drift_alarm` uses instantaneous `rel_deviation` |
+| `--lookback-minutes N` | `None` (180 in incremental) | Query `N` minutes back from InfluxDB |
+| `--write-minutes N` | `None` (5 in incremental) | Write only points within the last `N` minutes of the latest timestamp (`0` = latest point only) |
+| `--delay-minutes N` | `0` | Shift target end time back by `N` minutes from `now()` (e.g., `30` when cron at `05:30` targets `05:00`) |
+| `--end-time "YYYY-MM-DD HH:MM:SS"` | `None` | Explicit target end timestamp (enables incremental mode; combine with `--lookback-minutes` & `--write-minutes` for backfills) |
+| `--skip-daily` | `False` | Skip writing the daily aggregation table (`softsensor_*_daily`) |
+
+**Example (1-week historical backfill matching `--single-point` drift logic):**
+```bash
+python src/inference.py --end-time "2026-10-10 10:00:00" --lookback-minutes 10080 --write-minutes 10080 --disable-ewma
+```
+
+#### 2. `fuel_gas/interpolation/run_interpolation.py`
+| Flag | Default | Description |
+|---|---|---|
+| `--method {linear,spline}` | `linear` | Interpolation method (`linear` piecewise SCADA/DCS or cubic `spline`) |
+| `--bc {natural,not-a-knot,clamped}` | `natural` | Spline boundary condition (used when `--method spline`) |
+| `--opening FLOAT` | `None` | Forward query: valve opening (%) → $C_v$ & predicted flowrate |
+| `--flowrate FLOAT` | `None` | Inverse query (`spline` mode): target flowrate → required valve opening (%) |
+| `--run-pipeline` | `False` | Run full historian linear interpolation pipeline |
+| `--no-save-db` | `False` | Skip saving linear predictions to TimescaleDB (`predicted_fuel_gas_103a`) |
+| `--plot` | `False` | Generate visual plots into `fuel_gas/interpolation/reports/figures/` |
+
+#### 3. `permeate_sensor/interpolation/run_spline.py`
+| Flag | Default | Description |
+|---|---|---|
+| `--valve {permeate,fuelgas}` | `permeate` | Predefined valve dataset (`cv_permeate.csv` or `cv_fuelgas.csv`) |
+| `--file PATH` | `None` | Custom CSV path containing `opening`, `cv`, and `flowrate` columns |
+| `--bc {natural,not-a-knot,clamped}` | `natural` | Cubic spline boundary condition |
+| `--opening FLOAT` | `None` | Forward query: evaluate flowrate and $C_v$ for a given opening (%) |
+| `--flowrate FLOAT` | `None` | Inverse query: evaluate required opening (%) for a given target flowrate |
+| `--export` | `False` | Export fine-grid interpolation table to CSV |
+| `--step FLOAT` | `0.1` | Step size (%) for fine-grid CSV export |
+| `--plot` | `False` | Generate and save visual spline plot figure |
+| `--all` | `False` | Run grid export and plot for both `permeate` and `fuelgas` |
+
+#### 4. `permeate_sensor/interpolation/src/evaluate_hourly.py`
+| Flag | Default | Description |
+|---|---|---|
+| `--date YYYY-MM-DD` | `2026-09-09` | Target evaluation date queried from InfluxDB |
+| `--mode {mean,snapshot}` | `mean` | Hourly aggregation mode (`mean` = hourly average, `snapshot` = top-of-hour point) |
+| `--plot` | `True` | Save hourly comparison visualization plot |
 
 ### D. Host Cron Examples (Every 5 Minutes at `:30` Seconds)
 **Linux (`crontab -e`):**
