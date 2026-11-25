@@ -1,6 +1,6 @@
-# WHB #1 Virtual Sensor System (InfluxDB Edition)
+# WHB #1 Virtual Sensor System (InfluxDB Input + TimescaleDB Output)
 
-A *Virtual Sensor / Soft Sensor* system for **Waste Heat Boiler #1 (WHB #1)**, Medco E&P Indonesia, powered by **InfluxDB v1.x (Time-Series Database)**. This project provides real-time and batch flowrate estimation as well as *sensor drift* detection for two critical sensors: **Fuel Gas (`fuel_gas/`)** and **Permeate Gas (`permeate_sensor/`)**.
+A *Virtual Sensor / Soft Sensor* system for **Waste Heat Boiler #1 (WHB #1)**, Medco E&P Indonesia, reading process historian data from **InfluxDB v1.x** and writing predictions and daily aggregations to **TimescaleDB (PostgreSQL hypertables)**. This project provides real-time and batch flowrate estimation as well as *sensor drift* detection for two critical sensors: **Fuel Gas (`fuel_gas/`)** and **Permeate Gas (`permeate_sensor/`)**.
 
 ---
 
@@ -21,7 +21,7 @@ A *Virtual Sensor / Soft Sensor* system for **Waste Heat Boiler #1 (WHB #1)**, M
 ### A. Fuel Gas (`fuel_gas/`)
 1. **Method 1 — Valve Characteristics Interpolation (`fuel_gas/interpolation/`)**
    - *First-principles* estimation based on control valve opening (`46-FIC-103A1.Q`) and the valve characteristic curve ([`cv_fuelgas.csv`](fuel_gas/data/cv_fuelgas.csv)):
-     - **Piecewise Linear (`ValveFlowEstimator`):** Maps valve opening (%) → capacity coefficient $C_v$ via linear interpolation (`numpy.interp`), then computes $\text{Flow} = 48.4467 \times C_v$. Compatible with PLC/DCS/SCADA function blocks and writes batch results to the `predicted_fuel_gas_103a` measurement in InfluxDB.
+     - **Piecewise Linear (`ValveFlowEstimator`):** Maps valve opening (%) → capacity coefficient $C_v$ via linear interpolation (`numpy.interp`), then computes $\text{Flow} = 48.4467 \times C_v$. Compatible with PLC/DCS/SCADA function blocks and writes batch results to the `predicted_fuel_gas_103a` hypertable in TimescaleDB.
      - **Natural Cubic Spline (`ValveSplineInterpolator`):** Smooth spline curve supporting both *forward* queries (opening → flow & $C_v$) and *inverse* queries (target flow → required opening).
 2. **Method 2 — Machine Learning (`fuel_gas/machine_learning/`)**
    - **7 Raw Features (Stateless, zero target/setpoint leakage):**
@@ -62,7 +62,8 @@ A *Virtual Sensor / Soft Sensor* system for **Waste Heat Boiler #1 (WHB #1)**, M
 ```text
 vsensor_influxdb/
 ├── common/
-│   └── influx_client.py               # InfluxDB v1.x client & helpers (query & line protocol write)
+│   ├── influx_client.py               # InfluxDB v1.x client & helpers (historian input queries)
+│   └── timescale_client.py            # TimescaleDB client (hypertable auto-DDL, batch upsert, SQL query)
 ├── docker/
 │   ├── crontab                        # 5-minute cron schedule (:30s) for permeate & fuel_gas
 │   └── entrypoint.sh                  # Exports env vars to /etc/environment & starts cron
@@ -91,6 +92,7 @@ When deploying to different environments (staging/production), update the config
 
 1. **Via `.env` file in the project root** (copy from [`.env.example`](.env.example)):
    ```env
+   # InfluxDB 1.x (Historian Input)
    INFLUX_HOST=192.168.5.216
    INFLUX_PORT=8086
    INFLUX_USER=spcuser
@@ -98,8 +100,16 @@ When deploying to different environments (staging/production), update the config
    INFLUX_DATABASE=whb_medco
    INFLUX_MEASUREMENT=historian_clean
    INFLUX_CHRONOGRAF_PORT=8888
+
+   # TimescaleDB (Soft Sensor Output)
+   TIMESCALE_HOST=192.168.5.219
+   TIMESCALE_PORT=5432
+   TIMESCALE_USER=postgres
+   TIMESCALE_PASSWORD=your_password_here
+   TIMESCALE_DATABASE=whb_db
+   TIMESCALE_SCHEMA=public
    ```
-   - [`common/influx_client.py`](common/influx_client.py) loads `.env` automatically at startup via `os.environ.setdefault(...)`.
+   - [`common/influx_client.py`](common/influx_client.py) and [`common/timescale_client.py`](common/timescale_client.py) load `.env` automatically at startup via `os.environ.setdefault(...)`.
    - System/OS environment variables take **precedence** over `.env`.
 
 2. **Override via Environment Variables (Docker / Shell):**
@@ -118,29 +128,37 @@ When deploying to different environments (staging/production), update the config
    ```
    In `docker-compose.yml`, you can also add an `environment:` block under `vsensor-cron` to override `.env` values per deployment environment.
 
-3. **Changing Output Measurement Names & Drift Parameters (`src/config.py`):**
-   - [`fuel_gas/machine_learning/src/config.py`](fuel_gas/machine_learning/src/config.py): `OUTPUT_MEASUREMENT`, `OUTPUT_DAILY_MEASUREMENT`, `DRIFT_REL_THRESHOLD`, `EWMA_ALPHA`, `MIN_ACTIVE_FLOW`.
-   - [`permeate_sensor/machine_learning/src/config.py`](permeate_sensor/machine_learning/src/config.py): `OUTPUT_MEASUREMENT`, `OUTPUT_DAILY_MEASUREMENT`, `DRIFT_REL_THRESHOLD`, `EWMA_ALPHA`, `MIN_ACTIVE_FLOW`.
-   - [`fuel_gas/interpolation/src/config.py`](fuel_gas/interpolation/src/config.py): `OUTPUT_TABLE_LINEAR`.
+3. **Changing Output Table Names & Drift Parameters (`src/config.py`):**
+   - [`fuel_gas/machine_learning/src/config.py`](fuel_gas/machine_learning/src/config.py): `TIMESCALE_DATABASE`, `TIMESCALE_SCHEMA`, `OUTPUT_MEASUREMENT`, `OUTPUT_DAILY_MEASUREMENT`, `DRIFT_REL_THRESHOLD`, `EWMA_ALPHA`, `MIN_ACTIVE_FLOW`.
+   - [`permeate_sensor/machine_learning/src/config.py`](permeate_sensor/machine_learning/src/config.py): `TIMESCALE_DATABASE`, `TIMESCALE_SCHEMA`, `OUTPUT_MEASUREMENT`, `OUTPUT_DAILY_MEASUREMENT`, `DRIFT_REL_THRESHOLD`, `EWMA_ALPHA`, `MIN_ACTIVE_FLOW`.
+   - [`fuel_gas/interpolation/src/config.py`](fuel_gas/interpolation/src/config.py): `TIMESCALE_DATABASE`, `TIMESCALE_SCHEMA`, `OUTPUT_TABLE_LINEAR`.
 
-4. **InfluxDB User Permissions:**
-   - **Training & Evaluation:** Requires **READ** access to `historian_clean` (and output measurements for `fuel_gas/machine_learning/src/evaluate.py`).
-   - **Inference & Cron:** Requires **READ** (`historian_clean`) and **WRITE** access on `INFLUX_DATABASE`. `write_dataframe()` calls `ensure_database_exists()` to create the database automatically if it does not exist.
+4. **Database User Permissions:**
+   - **InfluxDB (`INFLUX_DATABASE`):** Requires **READ** access to `historian_clean` for training, evaluation, and inference.
+   - **TimescaleDB (`TIMESCALE_DATABASE`):** Requires **READ** and **WRITE** access (plus `CREATE` on schema and `timescaledb` extension on initial table creation). `write_dataframe()` in `common/timescale_client.py` automatically creates the target schema, table, and hypertable if they do not exist.
 
-### B. Data Access Layer (`common/influx_client.py`)
-- `get_client()`: Initializes an authenticated `InfluxDBClient`.
-- `query_dataframe(query)`: Executes InfluxQL and returns a pandas `DataFrame` with a normalized `Timestamp` column.
-- `query_interval_tags(tags, start, end)`: Queries process tags over a specific time range.
-- `query_multiple_intervals(tags, intervals_df)`: Queries and concatenates data across multiple training/test windows.
-- `write_dataframe(df, measurement)`: Writes a `DataFrame` in batches using InfluxDB Line Protocol.
+### B. Data Access Layer (`common/influx_client.py` & `common/timescale_client.py`)
+- **`common/influx_client.py` (Historian Input):**
+  - `get_client()`: Initializes an authenticated `InfluxDBClient`.
+  - `query_dataframe(query)`: Executes InfluxQL and returns a pandas `DataFrame` with a normalized `Timestamp` column.
+  - `query_interval_tags(tags, start, end)`: Queries process tags over a specific time range.
+  - `query_multiple_intervals(tags, intervals_df)`: Queries and concatenates data across multiple training/test windows.
+- **`common/timescale_client.py` (Soft Sensor Output):**
+  - `get_connection()`: Initializes an authenticated `psycopg2` connection.
+  - `ensure_hypertable(conn, table_name, columns_with_types)`: Auto-creates schema, table (`time TIMESTAMPTZ NOT NULL PRIMARY KEY`), missing columns, and TimescaleDB hypertable.
+  - `write_dataframe(df, table_name)`: Normalizes column names to `snake_case` and performs idempotent batch upserts (`ON CONFLICT (time) DO UPDATE`).
+  - `query_dataframe(query)`: Executes PostgreSQL/TimescaleDB SQL and returns a pandas `DataFrame` with `Timestamp`.
 
-### C. InfluxDB Measurements (`whb_medco`)
+### C. Database Schemas: InfluxDB Input & TimescaleDB Output
+**InfluxDB (`whb_medco`):**
 1. **`historian_clean`** *(5-min SCADA Input)*: 24+ primary process tags.
-2. **`predicted_fuel_gas_103a`** *(Fuel Gas Interpolation Output)*: `46-FIC-103A.Q_opening`, `estimated_cv_linear`, `predicted_flow_linear`, `sensor_actual_flow_uncalibrated`, `sensor_drift_deviation`.
-3. **`softsensor_fuelgas_output`** *(Fuel Gas ML Output)*: `measured_103A1`, `valve_opening_pct`, `whb1_on`, `valve_open`, `fuel_gas_active`, `y_hat`, `F_hat`, `deviation`, `rel_deviation`, `rel_dev_ewma`, `drift_alarm`, `trusted`, `suspect`.
-4. **`softsensor_fuelgas_daily`** *(Fuel Gas Daily Aggregation)*: `measured_total_lbs`, `softsensor_total_lbs`, `diff_pct`, `drift_alarm_frac`, `active_minutes`.
-5. **`softsensor_permeate_output`** *(Permeate Gas ML Output)*: `measured_106A`, `whb1_on`, `feed_total`, `P_total`, `y_hat`, `F_hat`, `deviation`, `rel_deviation`, `rel_dev_ewma`, `drift_alarm`, `trusted`, `suspect`.
-6. **`softsensor_permeate_daily`** *(Permeate Gas Daily Aggregation)*: `measured_total_lbs`, `softsensor_total_lbs`, `diff_%`, `drift_alarm_frac`.
+
+**TimescaleDB (`whb_db`, schema `public`, `snake_case` columns):**
+1. **`predicted_fuel_gas_103a`** *(Fuel Gas Interpolation Output)*: `time`, `tag_46_fic_103a_q_opening`, `estimated_cv_linear`, `predicted_flow_linear`, `measured_fuelgas`, `sensor_drift_deviation`.
+2. **`softsensor_fuelgas_output`** *(Fuel Gas ML Output)*: `time`, `measured_fuelgas`, `valve_opening_pct`, `whb1_on`, `valve_open`, `fuel_gas_active`, `y_hat`, `f_hat`, `deviation`, `rel_deviation`, `rel_dev_ewma`, `drift_alarm`, `trusted`, `suspect`.
+3. **`softsensor_fuelgas_daily`** *(Fuel Gas Daily Aggregation)*: `time`, `measured_total_lbs`, `softsensor_total_lbs`, `active_minutes`, `drift_alarm_frac`, `diff_pct`.
+4. **`softsensor_permeate_output`** *(Permeate Gas ML Output)*: `time`, `measured_permeateflow`, `whb1_on`, `feed_total`, `p_total`, `y_hat`, `f_hat`, `deviation`, `rel_deviation`, `rel_dev_ewma`, `drift_alarm`, `trusted`, `suspect`.
+5. **`softsensor_permeate_daily`** *(Permeate Gas Daily Aggregation)*: `time`, `measured_total_lbs`, `softsensor_total_lbs`, `drift_alarm_frac`, `diff_pct`.
 
 ---
 
@@ -152,12 +170,12 @@ When deploying to different environments (staging/production), update the config
 cd fuel_gas/interpolation
 python run_interpolation.py --opening 22.5
 python run_interpolation.py --method spline --flowrate 440
-python run_interpolation.py --run-pipeline          # Batch to InfluxDB (predicted_fuel_gas_103a)
+python run_interpolation.py --run-pipeline          # Batch to TimescaleDB (predicted_fuel_gas_103a)
 
 # 2. Machine Learning (Training, Inference, Evaluation)
 cd ../machine_learning
 python src/train.py                                 # Retrain model from fuel_valid_train_data.csv
-python src/inference.py                             # Full historian batch inference to InfluxDB
+python src/inference.py                             # Full historian batch inference to TimescaleDB
 python src/inference.py --single-point              # Single latest point inference (EWMA disabled)
 python src/evaluate.py                              # Evaluation & figures to reports/
 python run_pipeline.py                              # Run train -> inference -> evaluate
@@ -173,7 +191,7 @@ python src/evaluate_hourly.py --date 2026-09-09 --mode mean
 # 2. Machine Learning (Training, Inference, Evaluation)
 cd ../machine_learning
 python src/train.py                                 # Retrain model from permeate_valid_data.csv
-python src/inference.py                             # Full historian batch inference to InfluxDB
+python src/inference.py                             # Full historian batch inference to TimescaleDB
 python src/inference.py --single-point              # Single latest point inference (EWMA disabled)
 python src/evaluate.py                              # Evaluation & figures to reports/
 python run_pipeline.py                              # Run train -> inference -> evaluate
