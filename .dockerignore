@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.py[cod]
+*$py.class
+.vscode/
+.git/
+*.log
+reports/
+slides/
+data/

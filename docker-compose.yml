@@ -1,0 +1,11 @@
+services:
+  vsensor-cron:
+    build: .
+    image: vsensor-influxdb:latest
+    container_name: vsensor-cron
+    env_file:
+      - .env
+    volumes:
+      - ./permeate_sensor/machine_learning/models:/app/permeate_sensor/machine_learning/models
+      - ./fuel_gas/machine_learning/models:/app/fuel_gas/machine_learning/models
+    restart: unless-stopped

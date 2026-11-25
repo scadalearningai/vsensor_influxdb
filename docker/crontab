@@ -1,0 +1,8 @@
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+
+# Permeate Sensor (46-FQI-106A) — every 5 min at :30s, single latest point, EWMA disabled
+*/5 * * * * sleep 30 && cd /app/permeate_sensor/machine_learning && /usr/local/bin/python src/inference.py --single-point >> /var/log/permeate_inference.log 2>&1
+
+# Fuel Gas Sensor (46-FIC-103A1.A) — every 5 min at :30s, single latest point, EWMA disabled
+*/5 * * * * sleep 30 && cd /app/fuel_gas/machine_learning && /usr/local/bin/python src/inference.py --single-point >> /var/log/fuelgas_inference.log 2>&1
