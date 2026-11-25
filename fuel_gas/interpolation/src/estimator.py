@@ -38,7 +38,8 @@ except ImportError:
 if VSENSOR_ROOT not in sys.path:
     sys.path.insert(0, VSENSOR_ROOT)
 
-from common.influx_client import query_dataframe, write_dataframe
+from common.influx_client import query_dataframe
+from common.timescale_client import write_dataframe as write_timescale_dataframe
 
 
 class ValveFlowEstimator:
@@ -163,17 +164,19 @@ def run_prediction_pipeline(
         print(f"   - {k:<48}: {v}")
 
     if save_to_db:
-        print(f"\n5. Writing predictions to InfluxDB measurement: '{OUTPUT_TABLE_LINEAR}'...")
+        from src.config import TIMESCALE_DATABASE, TIMESCALE_SCHEMA
+
+        print(f"\n5. Writing predictions to TimescaleDB table: '{TIMESCALE_SCHEMA}.{OUTPUT_TABLE_LINEAR}'...")
         df_out = pd.DataFrame({
             "Timestamp": df["Timestamp"],
             "46-FIC-103A.Q_opening": df["valve_opening"],
             "estimated_cv_linear": df["estimated_cv"],
             "predicted_flow_linear": df["predicted_flow"],
-            "sensor_actual_flow_uncalibrated": df["sensor_flow_actual"],
+            "measured_fuelgas": df["sensor_flow_actual"],
             "sensor_drift_deviation": df["sensor_deviation"],
         })
-        write_dataframe(df_out, measurement=OUTPUT_TABLE_LINEAR, database=database)
-        print(f"   Measurement '{OUTPUT_TABLE_LINEAR}' updated successfully ({len(df_out):,} rows).")
+        write_timescale_dataframe(df_out, table_name=OUTPUT_TABLE_LINEAR, database=TIMESCALE_DATABASE, schema=TIMESCALE_SCHEMA)
+        print(f"   Table '{TIMESCALE_SCHEMA}.{OUTPUT_TABLE_LINEAR}' updated successfully ({len(df_out):,} rows).")
 
     print("\n" + "=" * 75)
     print("LINEAR INTERPOLATION PREDICTION COMPLETED!")

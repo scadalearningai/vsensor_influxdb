@@ -23,11 +23,12 @@ for p in (ML_DIR, PROJECT_ROOT, VSENSOR_ROOT):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from common.influx_client import query_dataframe
+from common.timescale_client import query_dataframe as query_timescale_dataframe
 from src.config import (
     DRIFT_REL_THRESHOLD,
     FIG_DIR,
-    INFLUX_DATABASE,
+    TIMESCALE_DATABASE,
+    TIMESCALE_SCHEMA,
     MODEL_PATH,
     OUTPUT_DAILY_MEASUREMENT,
     OUTPUT_MEASUREMENT,
@@ -205,29 +206,31 @@ def _plot_feature_importance(summary: Dict[str, Any], out_path: str) -> None:
 
 def _plot_historian_overview(summary: Dict[str, Any], out_path: str) -> None:
     """Plots full-historian inference overview and Blind Last Test window monitoring."""
-    df_hr = query_dataframe(
+    df_hr = query_timescale_dataframe(
         f'''
-        SELECT mean("measured_103A1") AS measured,
-               mean("F_hat") AS f_hat,
-               mean("rel_dev_ewma") * 100.0 AS ewma_pct
-        FROM "{OUTPUT_MEASUREMENT}"
-        GROUP BY time(1h) fill(none)
-        ORDER BY time ASC
+        SELECT time_bucket('1 hour', time) AS time,
+               AVG(measured_fuelgas) AS measured,
+               AVG(f_hat) AS f_hat,
+               AVG(rel_dev_ewma) * 100.0 AS ewma_pct
+        FROM "{TIMESCALE_SCHEMA}"."{OUTPUT_MEASUREMENT}"
+        GROUP BY 1
+        ORDER BY 1 ASC
         ''',
-        database=INFLUX_DATABASE,
+        database=TIMESCALE_DATABASE,
     )
     if not df_hr.empty:
         df_hr = df_hr.rename(columns={"Timestamp": "ts"})
     t_start = pd.to_datetime(summary["last_test_period_info"]["start"]).strftime("%Y-%m-%dT%H:%M:%SZ")
     t_end = pd.to_datetime(summary["last_test_period_info"]["end"]).strftime("%Y-%m-%dT%H:%M:%SZ")
-    df_last = query_dataframe(
+    df_last = query_timescale_dataframe(
         f'''
-        SELECT "measured_103A1" AS measured, "F_hat" AS f_hat, "rel_dev_ewma" * 100.0 AS ewma_pct
-        FROM "{OUTPUT_MEASUREMENT}"
-        WHERE time >= '{t_start}' AND time <= '{t_end}'
+        SELECT time, measured_fuelgas AS measured, f_hat, rel_dev_ewma * 100.0 AS ewma_pct
+        FROM "{TIMESCALE_SCHEMA}"."{OUTPUT_MEASUREMENT}"
+        WHERE time >= %s AND time <= %s
         ORDER BY time ASC
         ''',
-        database=INFLUX_DATABASE,
+        params=(t_start, t_end),
+        database=TIMESCALE_DATABASE,
     )
     if not df_last.empty:
         df_last = df_last.rename(columns={"Timestamp": "ts"})
@@ -408,15 +411,18 @@ def run_evaluation() -> None:
     _plot_historian_overview(summary, p5)
     print(f"Saved: {p5}")
 
-    df_count = query_dataframe(f'SELECT count("F_hat") AS total_rows FROM "{OUTPUT_MEASUREMENT}"', database=INFLUX_DATABASE)
+    df_count = query_timescale_dataframe(
+        f'SELECT COUNT(f_hat) AS total_rows FROM "{TIMESCALE_SCHEMA}"."{OUTPUT_MEASUREMENT}"',
+        database=TIMESCALE_DATABASE,
+    )
     total_rows = int(df_count["total_rows"].iloc[0]) if not df_count.empty else 0
-    df_sep9 = query_dataframe(
+    df_sep9 = query_timescale_dataframe(
         f'''
-        SELECT * FROM "{OUTPUT_DAILY_MEASUREMENT}"
+        SELECT * FROM "{TIMESCALE_SCHEMA}"."{OUTPUT_DAILY_MEASUREMENT}"
         WHERE time >= '2026-09-09T00:00:00Z' AND time < '2026-09-10T00:00:00Z'
         LIMIT 1
         ''',
-        database=INFLUX_DATABASE,
+        database=TIMESCALE_DATABASE,
     )
     if not df_sep9.empty:
         sep9 = df_sep9.iloc[0].to_dict()

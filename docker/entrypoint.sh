@@ -2,8 +2,8 @@
 set -e
 
 if [ "$1" = "cron" ]; then
-    # Export container environment variables so cron jobs can read INFLUX_* and DB settings
-    printenv | grep -E '^(INFLUX_|TZ=|PYTHONPATH=)' > /etc/environment || true
+    # Export container environment variables so cron jobs can read INFLUX_*, TIMESCALE_*, and DB settings
+    printenv | grep -E '^(INFLUX_|TIMESCALE_|TZ=|PYTHONPATH=)' > /etc/environment || true
 
     touch /var/log/permeate_inference.log /var/log/fuelgas_inference.log
     cron

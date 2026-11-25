@@ -23,9 +23,12 @@ for p in (ML_DIR, PROJECT_ROOT, VSENSOR_ROOT):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from common.influx_client import query_dataframe, write_dataframe
+from common.influx_client import query_dataframe
+from common.timescale_client import write_dataframe as write_timescale_dataframe
 from src.config import (
     INFLUX_DATABASE,
+    TIMESCALE_DATABASE,
+    TIMESCALE_SCHEMA,
     HISTORIAN_TABLE,
     OUTPUT_MEASUREMENT,
     OUTPUT_DAILY_MEASUREMENT,
@@ -186,7 +189,7 @@ def run_inference(
 
     df_output_full = pd.DataFrame({
         "Timestamp": df_pred["Timestamp"],
-        "measured_103A1": measured,
+        "measured_fuelgas": measured,
         "valve_opening_pct": df_pred["46-FIC-103A1.Q"],
         "whb1_on": df_pred["whb1_on"],
         "valve_open": df_pred["valve_open"],
@@ -209,9 +212,9 @@ def run_inference(
         df_to_write = df_output_full
 
     if skip_daily:
-        print(f"Writing {len(df_to_write):,} latest points to InfluxDB measurement '{OUTPUT_MEASUREMENT}'...")
-        write_dataframe(df_to_write, measurement=OUTPUT_MEASUREMENT, database=INFLUX_DATABASE)
-        print(f"InfluxDB export complete: {len(df_to_write):,} points written (daily aggregation skipped).")
+        print(f"Writing {len(df_to_write):,} latest points to TimescaleDB table '{TIMESCALE_SCHEMA}.{OUTPUT_MEASUREMENT}'...")
+        write_timescale_dataframe(df_to_write, table_name=OUTPUT_MEASUREMENT, database=TIMESCALE_DATABASE, schema=TIMESCALE_SCHEMA)
+        print(f"TimescaleDB export complete: {len(df_to_write):,} points written (daily aggregation skipped).")
         return
 
     ts_diffs = pd.to_datetime(df_output_full["Timestamp"]).diff().dt.total_seconds().dropna()
@@ -223,7 +226,7 @@ def run_inference(
     daily_full = (
         df_output_full.groupby("Date")
         .agg(
-            measured_total_lbs=("measured_103A1", lambda s: float(np.sum(s) * dt_hours)),
+            measured_total_lbs=("measured_fuelgas", lambda s: float(np.sum(s) * dt_hours)),
             softsensor_total_lbs=("F_hat", lambda s: float(np.sum(s) * dt_hours)),
             active_minutes=("fuel_gas_active", lambda s: float(np.sum(s) * dt_minutes)),
             drift_alarm_frac=("drift_alarm", "mean"),
@@ -237,10 +240,10 @@ def run_inference(
     daily_full["diff_pct"] = daily_full["diff_pct"].fillna(0.0)
     df_output_full = df_output_full.drop(columns=["Date"])
 
-    print(f"Writing batch inference outputs to InfluxDB measurement: '{OUTPUT_MEASUREMENT}' & '{OUTPUT_DAILY_MEASUREMENT}'")
-    write_dataframe(df_to_write, measurement=OUTPUT_MEASUREMENT, database=INFLUX_DATABASE)
-    write_dataframe(daily_full, measurement=OUTPUT_DAILY_MEASUREMENT, database=INFLUX_DATABASE, time_column="Date")
-    print(f"InfluxDB export complete: {len(df_to_write):,} full points and {len(daily_full):,} daily points written.")
+    print(f"Writing batch inference outputs to TimescaleDB tables: '{TIMESCALE_SCHEMA}.{OUTPUT_MEASUREMENT}' & '{TIMESCALE_SCHEMA}.{OUTPUT_DAILY_MEASUREMENT}'")
+    write_timescale_dataframe(df_to_write, table_name=OUTPUT_MEASUREMENT, database=TIMESCALE_DATABASE, schema=TIMESCALE_SCHEMA)
+    write_timescale_dataframe(daily_full, table_name=OUTPUT_DAILY_MEASUREMENT, database=TIMESCALE_DATABASE, schema=TIMESCALE_SCHEMA, time_column="Date")
+    print(f"TimescaleDB export complete: {len(df_to_write):,} full points and {len(daily_full):,} daily points written.")
 
     if not df_output_full.loc[df_output_full["fuel_gas_active"] == 0].empty:
         shutdown_max = float(df_output_full.loc[df_output_full["fuel_gas_active"] == 0, "F_hat"].max())

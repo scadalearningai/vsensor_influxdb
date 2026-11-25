@@ -85,32 +85,33 @@ def create_prediction_overview_plot(
     output_img: str = None,
 ) -> str:
     """Plot time-series predicted flow rate, valve opening, 2-week comparison, and drift distribution."""
-    from src.config import INFLUX_DATABASE, VSENSOR_ROOT
+    from src.config import TIMESCALE_DATABASE, TIMESCALE_SCHEMA, VSENSOR_ROOT
     if VSENSOR_ROOT not in sys.path:
         sys.path.insert(0, VSENSOR_ROOT)
-    from common.influx_client import query_dataframe
+    from common.timescale_client import query_dataframe
 
-    target_db = database or INFLUX_DATABASE
+    target_db = database or TIMESCALE_DATABASE
     if output_img is None:
         output_img = os.path.join(FIGURES_DIR, "plot_prediction_overview.png")
     os.makedirs(os.path.dirname(os.path.abspath(output_img)), exist_ok=True)
 
-    print(f"Reading prediction results from InfluxDB: '{target_db}.{OUTPUT_TABLE_LINEAR}'...")
+    print(f"Reading prediction results from TimescaleDB: '{target_db}.{TIMESCALE_SCHEMA}.{OUTPUT_TABLE_LINEAR}'...")
     df = query_dataframe(
         f'''
         SELECT
-            "46-FIC-103A.Q_opening" AS opening,
-            "estimated_cv_linear" AS cv,
-            "predicted_flow_linear" AS predicted_flow,
-            "sensor_actual_flow_uncalibrated" AS sensor_uncalibrated,
-            "sensor_drift_deviation" AS drift_deviation
-        FROM "{OUTPUT_TABLE_LINEAR}"
+            time,
+            tag_46_fic_103a_q_opening AS opening,
+            estimated_cv_linear AS cv,
+            predicted_flow_linear AS predicted_flow,
+            measured_fuelgas AS sensor_uncalibrated,
+            sensor_drift_deviation AS drift_deviation
+        FROM "{TIMESCALE_SCHEMA}"."{OUTPUT_TABLE_LINEAR}"
         ORDER BY time ASC
         ''',
         database=target_db,
     )
     if df.empty:
-        raise ValueError(f"No data found in InfluxDB '{target_db}.{OUTPUT_TABLE_LINEAR}'.")
+        raise ValueError(f"No data found in TimescaleDB '{target_db}.{TIMESCALE_SCHEMA}.{OUTPUT_TABLE_LINEAR}'.")
 
     plt.style.use("seaborn-v0_8-whitegrid" if "seaborn-v0_8-whitegrid" in plt.style.available else "default")
     fig = plt.figure(figsize=(16, 11), dpi=300)

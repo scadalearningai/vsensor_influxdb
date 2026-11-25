@@ -19,9 +19,13 @@ _cv_local = os.path.join(LOCAL_DATA_DIR, "cv_fuelgas.csv")
 _cv_root = os.path.join(DATA_DIR, "cv_fuelgas.csv")
 DEFAULT_CV_PATH = _cv_local if os.path.exists(_cv_local) else _cv_root
 
-# InfluxDB Configuration
+# InfluxDB Configuration (Historian Input)
 INFLUX_DATABASE = os.getenv("INFLUX_DATABASE", "whb_medco")
 HISTORIAN_TABLE = os.getenv("INFLUX_MEASUREMENT", "historian_clean")
+
+# TimescaleDB Configuration (Output)
+TIMESCALE_DATABASE = os.getenv("TIMESCALE_DATABASE", "whb_medco")
+TIMESCALE_SCHEMA = os.getenv("TIMESCALE_SCHEMA", "public")
 OUTPUT_TABLE_LINEAR = "predicted_fuel_gas_103a"
 
 # Legacy DuckDB Reference Paths

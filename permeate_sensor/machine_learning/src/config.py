@@ -19,9 +19,13 @@ REPORTS_DIR = os.path.join(ML_DIR, 'reports')
 FIG_DIR = os.path.join(REPORTS_DIR, 'figures')
 PLOTLY_DIR = os.path.join(REPORTS_DIR, 'plotly')
 
-# InfluxDB Configuration
+# InfluxDB Configuration (Historian Input)
 INFLUX_DATABASE = os.getenv("INFLUX_DATABASE", "whb_medco")
 HISTORIAN_TABLE = os.getenv("INFLUX_MEASUREMENT", "historian_clean")
+
+# TimescaleDB Configuration (Soft Sensor Output)
+TIMESCALE_DATABASE = os.getenv("TIMESCALE_DATABASE", "whb_medco")
+TIMESCALE_SCHEMA = os.getenv("TIMESCALE_SCHEMA", "public")
 OUTPUT_MEASUREMENT = "softsensor_permeate_output"
 OUTPUT_DAILY_MEASUREMENT = "softsensor_permeate_daily"
 
